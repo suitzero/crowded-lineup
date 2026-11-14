@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="theme-color" content="#072a40" />
+    <meta
+      name="description"
+      content="Crowded Lineup — Mobile-first pixel-art surfing strategy game with built-in reinforcement learning."
+    />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icon-192.svg" />
+    <link rel="apple-touch-icon" href="./icon-192.svg" />
+    <title>Crowded Lineup — Pixel Surf &amp; RL</title>
+    <script type="module" crossorigin src="./assets/index-DNn2SSuG.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C7kx7sW1.css">
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Navigation Bar -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-wave">🌊</span>
+          <span class="brand-title">CROWDED LINEUP</span>
+        </div>
+        <nav class="tab-nav" role="tablist">
+          <button
+            id="tab-btn-play"
+            class="tab-btn active"
+            role="tab"
+            aria-selected="true"
+          >
+            PLAY
+          </button>
+          <button
+            id="tab-btn-train"
+            class="tab-btn"
+            role="tab"
+            aria-selected="false"
+          >
+            TRAIN AI
+          </button>
+        </nav>
+      </header>
+
+      <!-- PLAY TAB -->
+      <main id="panel-play" class="tab-panel active">
+        <!-- Simple HUD: wave count, catches, stamina, score -->
+        <section class="hud-bar" aria-label="Game HUD">
+          <div class="hud-item">
+            <span class="hud-label">WAVES</span>
+            <span id="hud-waves" class="hud-value">0</span>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">CATCHES</span>
+            <span id="hud-catches" class="hud-value">0</span>
+          </div>
+          <div class="hud-item hud-stamina-wrap">
+            <span class="hud-label">STAMINA</span>
+            <div class="stamina-meter">
+              <div id="hud-stamina-fill" class="stamina-fill"></div>
+            </div>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">SCORE</span>
+            <span id="hud-score" class="hud-value">0</span>
+          </div>
+        </section>
+
+        <!-- Opponent & Status Sub-bar -->
+        <div class="status-strip">
+          <span id="play-mode-badge" class="mode-badge">VS 3 RULE BOTS</span>
+          <span id="play-status-msg" class="status-msg"
+            >Tap ocean to set target • Hold PADDLE</span
+          >
+          <button id="btn-reset-heat" class="mini-btn" title="Start new heat">
+            NEW HEAT
+          </button>
+        </div>
+
+        <!-- Low-resolution Pixel-Art Ocean Canvas -->
+        <div class="canvas-stage">
+          <canvas
+            id="ocean-canvas"
+            width="160"
+            height="240"
+            aria-label="Top-down pixel art surfing ocean"
+          ></canvas>
+        </div>
+
+        <!-- Mobile Touch Controls: Hold PADDLE & CATCH button -->
+        <section class="touch-controls">
+          <button id="btn-paddle" class="ctrl-btn btn-paddle" type="button">
+            <span class="ctrl-main">HOLD PADDLE</span>
+            <span class="ctrl-sub">Move to Target / Keys: WASD</span>
+          </button>
+          <button id="btn-catch" class="ctrl-btn btn-catch" type="button">
+            <span class="ctrl-main">CATCH WAVE</span>
+            <span class="ctrl-sub">Takeoff / Key: SPACE</span>
+          </button>
+        </section>
+
+        <!-- Play Settings Bar: Paddle Speed Slider + Opponent Mode -->
+        <section class="play-settings">
+          <div class="slider-row">
+            <label for="play-speed-slider">
+              Paddle Speed: <strong id="play-speed-val">1.0x</strong>
+            </label>
+            <input
+              id="play-speed-slider"
+              type="range"
+              min="0.6"
+              max="1.6"
+              step="0.1"
+              value="1.0"
+            />
+          </div>
+          <div class="opponent-toggle-row">
+            <span class="toggle-label">Lineup Rivals:</span>
+            <button
+              id="btn-mode-bots"
+              class="chip-btn active"
+              type="button"
+            >
+              Rule Bots
+            </button>
+            <button
+              id="btn-mode-trained"
+              class="chip-btn"
+              type="button"
+            >
+              Trained AI + Bots
+            </button>
+          </div>
+        </section>
+      </main>
+
+      <!-- TRAINING TAB -->
+      <section id="panel-train" class="tab-panel" hidden>
+        <div class="train-card">
+          <h2 class="section-title">Browser Q-Learning Lab (Web Worker)</h2>
+          <p class="section-desc">
+            Trains a tabular Q-learning surfer headlessly using the exact same
+            deterministic simulation and continuous normalized observations.
+          </p>
+
+          <!-- Episode Count Selector: 1K / 5K / 20K -->
+          <div class="control-group">
+            <span class="group-label">Episode Count</span>
+            <div class="ep-btn-group" role="group" aria-label="Episode count">
+              <button
+                type="button"
+                class="ep-btn active"
+                data-episodes="1000"
+              >
+                1K
+              </button>
+              <button type="button" class="ep-btn" data-episodes="5000">
+                5K
+              </button>
+              <button type="button" class="ep-btn" data-episodes="20000">
+                20K
+              </button>
+            </div>
+          </div>
+
+          <!-- Sliders: Paddling speed & Number of competitors -->
+          <div class="control-group">
+            <label for="train-speed-slider" class="slider-label">
+              <span>Paddling Speed</span>
+              <strong id="train-speed-val">1.0x</strong>
+            </label>
+            <input
+              id="train-speed-slider"
+              type="range"
+              min="0.6"
+              max="1.6"
+              step="0.1"
+              value="1.0"
+            />
+          </div>
+
+          <div class="control-group">
+            <label for="train-comp-slider" class="slider-label">
+              <span>Rule-Bot Competitors</span>
+              <strong id="train-comp-val">2</strong>
+            </label>
+            <input
+              id="train-comp-slider"
+              type="range"
+              min="0"
+              max="5"
+              step="1"
+              value="2"
+            />
+          </div>
+
+          <!-- Train / Pause / Cancel Buttons -->
+          <div class="train-actions">
+            <button id="btn-train-start" class="action-btn primary" type="button">
+              TRAIN
+            </button>
+            <button
+              id="btn-train-pause"
+              class="action-btn secondary"
+              type="button"
+              disabled
+            >
+              PAUSE
+            </button>
+            <button
+              id="btn-train-cancel"
+              class="action-btn danger"
+              type="button"
+              disabled
+            >
+              CANCEL
+            </button>
+          </div>
+
+          <!-- Progress Bar & Live Metrics -->
+          <div class="progress-wrap">
+            <div class="progress-bar">
+              <div id="train-progress-fill" class="progress-fill"></div>
+            </div>
+            <div class="metrics-grid">
+              <div class="metric-box">
+                <span class="m-label">PROGRESS</span>
+                <span id="stat-episodes" class="m-val">0 / 1000</span>
+              </div>
+              <div class="metric-box">
+                <span class="m-label">CATCH RATE</span>
+                <span id="stat-catch-rate" class="m-val">0.0%</span>
+              </div>
+              <div class="metric-box">
+                <span class="m-label">AVG REWARD</span>
+                <span id="stat-reward" class="m-val">0.0</span>
+              </div>
+              <div class="metric-box">
+                <span class="m-label">Q-STATES</span>
+                <span id="stat-states" class="m-val">0</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Catch-Rate Chart Canvas -->
+          <div class="chart-wrap">
+            <canvas id="train-chart" width="340" height="140"></canvas>
+          </div>
+
+          <!-- Policy Persistence & Evaluation -->
+          <div class="persistence-section">
+            <div class="policy-badge-row">
+              <span id="policy-summary-text" class="policy-summary">
+                Active Policy: Untrained (0 eps)
+              </span>
+            </div>
+            <div class="persist-buttons">
+              <button id="btn-save-local" class="small-btn" type="button">
+                Save Local
+              </button>
+              <button id="btn-load-local" class="small-btn" type="button">
+                Load Local
+              </button>
+              <button id="btn-export-json" class="small-btn" type="button">
+                Export JSON
+              </button>
+              <label class="small-btn file-label" for="input-import-json">
+                Import JSON
+              </label>
+              <input
+                id="input-import-json"
+                type="file"
+                accept="application/json,.json"
+                hidden
+              />
+            </div>
+
+            <button
+              id="btn-play-vs-ai"
+              class="action-btn accent full-width"
+              type="button"
+            >
+              🏄 PLAY AGAINST TRAINED AI
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+  </body>
+</html>
