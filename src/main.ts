@@ -1,10 +1,17 @@
 import './style.css';
 import {
+  initAudio,
+  isMuted,
+  playSfx,
+  setMuted,
+  startBgm,
+} from './audio/audioEngine.ts';
+import {
   ActionCode,
   CONTRACT_VERSION,
   SurferStatus,
 } from './contracts/types.ts';
-import type { ActionInput, WorldState } from './contracts/types.ts';
+import type { ActionInput, SurferAction, WorldState } from './contracts/types.ts';
 import { HumanPolicy } from './policies/policy.ts';
 import type { Policy } from './policies/policy.ts';
 import { QTablePolicy } from './policies/qTable.ts';
@@ -70,6 +77,7 @@ const hudWaves = getEl<HTMLElement>('hud-waves');
 const hudCatches = getEl<HTMLElement>('hud-catches');
 const hudStaminaFill = getEl<HTMLElement>('hud-stamina-fill');
 const hudScore = getEl<HTMLElement>('hud-score');
+const btnMute = getEl<HTMLButtonElement>('btn-mute');
 const playModeBadge = getEl<HTMLElement>('play-mode-badge');
 const playStatusMsg = getEl<HTMLElement>('play-status-msg');
 const btnResetHeat = getEl<HTMLButtonElement>('btn-reset-heat');
@@ -109,6 +117,43 @@ const btnPlayVsAi = getEl<HTMLButtonElement>('btn-play-vs-ai');
 const oceanRenderer = new OceanCanvasRenderer(oceanCanvas);
 const chartRenderer = new TrainingChartRenderer(trainChartCanvas);
 
+// --- Audio & Mute UI ---
+function updateMuteButtonUi(): void {
+  const mutedState = isMuted();
+  btnMute.textContent = mutedState ? '🔇' : '🔊';
+  btnMute.classList.toggle('muted', mutedState);
+  btnMute.setAttribute('aria-pressed', String(mutedState));
+}
+
+btnMute.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+});
+
+btnMute.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const nextMuted = !isMuted();
+  setMuted(nextMuted);
+  updateMuteButtonUi();
+  if (!nextMuted) {
+    playSfx('click');
+  }
+});
+
+// Resume AudioContext and start BGM after the first pointer interaction
+window.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (e.target instanceof Node && btnMute.contains(e.target)) {
+      return;
+    }
+    initAudio();
+    if (!isMuted()) {
+      startBgm();
+    }
+  },
+  { passive: true }
+);
+
 // --- Helper: Update Policy Summary UI ---
 function refreshPolicySummaryUi(): void {
   const meta = activeQPolicy.getMetadata();
@@ -136,8 +181,14 @@ function switchTab(tab: 'play' | 'train'): void {
   }
 }
 
-tabBtnPlay.addEventListener('click', () => switchTab('play'));
-tabBtnTrain.addEventListener('click', () => switchTab('train'));
+tabBtnPlay.addEventListener('click', () => {
+  playSfx('click');
+  switchTab('play');
+});
+tabBtnTrain.addEventListener('click', () => {
+  playSfx('click');
+  switchTab('train');
+});
 
 // --- Start / Reset Gameplay Heat ---
 function startNewHeat(nextSeed?: number): void {
@@ -166,17 +217,20 @@ function updatePlayModeUi(): void {
 }
 
 btnResetHeat.addEventListener('click', () => {
+  playSfx('click');
   startNewHeat();
   playStatusMsg.textContent = 'New ocean heat started!';
 });
 
 btnModeBots.addEventListener('click', () => {
+  playSfx('click');
   playVsTrainedAi = false;
   updatePlayModeUi();
   playStatusMsg.textContent = 'Rivals: Deterministic Rule Bots';
 });
 
 btnModeTrained.addEventListener('click', () => {
+  playSfx('click');
   playVsTrainedAi = true;
   updatePlayModeUi();
   playStatusMsg.textContent =
@@ -233,6 +287,9 @@ btnPaddle.addEventListener('pointerdown', (e) => {
     humanPolicy.setTouchTarget(world.surferX[0], Math.max(60, world.surferY[0] - 25));
   }
   setPaddleActive(true);
+  if (world.surferState[0] === SurferStatus.FREE) {
+    playSfx('splash');
+  }
 });
 
 btnPaddle.addEventListener('pointerup', () => setPaddleActive(false));
@@ -302,9 +359,21 @@ function updateHud(): void {
   hudScore.textContent = String(Math.round(world.surferScore[0]));
 }
 
+let bestHeatScore = 0;
+
 function advanceGameplayStep(): void {
   if (isEpisodeDone(world)) {
+    const finalScore = Math.round(world.surferScore[0]);
+    const isNewBest = finalScore > bestHeatScore;
+    if (isNewBest) {
+      bestHeatScore = finalScore;
+    }
+    playSfx('jingle');
     startNewHeat();
+    playStatusMsg.textContent = isNewBest
+      ? `🏆 Heat complete! New high score: ${finalScore}!`
+      : `Heat complete! Score: ${finalScore} — New heat started`;
+    updateHud();
     return;
   }
 
@@ -313,7 +382,8 @@ function advanceGameplayStep(): void {
 
   // Surfer 0: Human player
   const obs0 = observe(world, 0);
-  actions[0] = humanPolicy.selectAction(obs0);
+  const humanAct: SurferAction = humanPolicy.selectAction(obs0);
+  actions[0] = humanAct;
 
   // Surfers 1..N-1: Either Trained Q-AI (surfer 1) + RuleBots, or all RuleBots
   for (let i = 1; i < numSurfers; i++) {
@@ -325,16 +395,42 @@ function advanceGameplayStep(): void {
     actions[i] = policy.selectAction(obsI, world, i);
   }
 
+  const prevState = world.surferState[0];
   const prevCatches = world.surferCatches[0];
   const prevDropIns = world.surferDropIns[0];
+  const prevCollisions = world.surferCollisions[0];
+  const attemptedCatch =
+    prevState === SurferStatus.FREE && humanAct.action === ActionCode.CATCH;
+  const isPaddling =
+    prevState === SurferStatus.FREE &&
+    (Boolean(humanAct.paddle) ||
+      humanAct.action === ActionCode.LEFT ||
+      humanAct.action === ActionCode.RIGHT ||
+      humanAct.action === ActionCode.OUT ||
+      humanAct.action === ActionCode.IN);
+
   const stepRes = step(world, actions, world.config.dt);
 
-  if (world.surferCatches[0] > prevCatches) {
+  const caughtWave = world.surferCatches[0] > prevCatches;
+  const droppedIn = world.surferDropIns[0] > prevDropIns;
+  const collided = world.surferCollisions[0] > prevCollisions;
+
+  if (caughtWave) {
+    playSfx('catch');
     playStatusMsg.textContent = `🌊 Caught wave! +${Math.round(stepRes.rewards[0])} reward`;
-  } else if (world.surferDropIns[0] > prevDropIns) {
+  } else if (droppedIn) {
+    playSfx('collision');
     playStatusMsg.textContent = '⚠️ Drop-in penalty! Inside surfer had priority';
+  } else if (collided) {
+    playSfx('collision');
+    playStatusMsg.textContent = '💥 Surfer collision! (-6 penalty)';
+  } else if (attemptedCatch) {
+    playSfx('fail');
+    playStatusMsg.textContent = 'Missed wave — time takeoff near breaking peak!';
   } else if (world.surferState[0] === SurferStatus.WIPED_OUT) {
     playStatusMsg.textContent = '💥 Wiped out! Recovering...';
+  } else if (isPaddling) {
+    playSfx('splash');
   }
 
   updateHud();
@@ -380,6 +476,7 @@ let trainingHistory: TrainingProgressPoint[] = [];
 epButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     if (isTraining) return;
+    playSfx('click');
     epButtons.forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     selectedEpisodes = Number(btn.dataset.episodes) || 1000;
@@ -465,6 +562,7 @@ function handleWorkerMessage(msg: WorkerOutboundMessage): void {
 }
 
 btnTrainStart.addEventListener('click', () => {
+  playSfx('click');
   trainingHistory = [];
   trainProgressFill.style.width = '0%';
   setTrainingButtonsState(true, false);
@@ -485,6 +583,7 @@ btnTrainStart.addEventListener('click', () => {
 
 btnTrainPause.addEventListener('click', () => {
   if (!trainingWorker || !isTraining) return;
+  playSfx('click');
   if (isPaused) {
     setTrainingButtonsState(true, false);
     trainingWorker.postMessage({
@@ -501,6 +600,7 @@ btnTrainPause.addEventListener('click', () => {
 
 btnTrainCancel.addEventListener('click', () => {
   if (!trainingWorker || !isTraining) return;
+  playSfx('click');
   trainingWorker.postMessage({
     version: CONTRACT_VERSION,
     type: 'cancel',
@@ -509,6 +609,7 @@ btnTrainCancel.addEventListener('click', () => {
 
 // --- Policy Persistence (Save/Load Local, Export/Import JSON, Play vs AI) ---
 btnSaveLocal.addEventListener('click', () => {
+  playSfx('click');
   savePolicyToLocalStorage(activeQPolicy);
   policySummaryText.textContent = `Saved to localStorage! (${
     activeQPolicy.getMetadata().trainingEpisodes
@@ -516,6 +617,7 @@ btnSaveLocal.addEventListener('click', () => {
 });
 
 btnLoadLocal.addEventListener('click', () => {
+  playSfx('click');
   if (!hasSavedPolicyInLocalStorage()) {
     policySummaryText.textContent = 'No saved policy found in localStorage.';
     return;
@@ -528,6 +630,7 @@ btnLoadLocal.addEventListener('click', () => {
 });
 
 btnExportJson.addEventListener('click', () => {
+  playSfx('click');
   const json = serializePolicyToJsonString(activeQPolicy);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -543,6 +646,7 @@ btnExportJson.addEventListener('click', () => {
 inputImportJson.addEventListener('change', async () => {
   const file = inputImportJson.files?.[0];
   if (!file) return;
+  playSfx('click');
   try {
     const text = await file.text();
     const imported = deserializePolicyFromJsonString(text);
@@ -557,6 +661,7 @@ inputImportJson.addEventListener('change', async () => {
 });
 
 btnPlayVsAi.addEventListener('click', () => {
+  playSfx('click');
   playVsTrainedAi = true;
   playPaddleSpeed = trainPaddleSpeed;
   playSpeedSlider.value = String(playPaddleSpeed);
@@ -567,6 +672,7 @@ btnPlayVsAi.addEventListener('click', () => {
 });
 
 // --- Initialize App & PWA Service Worker ---
+updateMuteButtonUi();
 updateHud();
 updatePlayModeUi();
 refreshPolicySummaryUi();

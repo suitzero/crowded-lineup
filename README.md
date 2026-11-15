@@ -38,6 +38,7 @@ The ocean is viewed directly from above on a `160x240` pixel-art canvas:
 ### Desktop Keyboard Controls
 - **Move / Paddle**: `Arrow Keys` or `W` / `A` / `S` / `D` (`Up/W` = offshore `OUT`, `Down/S` = shoreward `IN`, `Left/A` = `LEFT`, `Right/D` = `RIGHT`)
 - **Catch Wave**: `Space` or `Enter`
+- **Audio & Mute**: BGM: '겨울바람' (백순진) 8-bit arrangement, synthesized procedurally via Web Audio API. Toggle the `🔊` / `🔇` mute button in the HUD bar (saved in `localStorage`).
 
 ### Priority & Etiquette Rules
 - **Inside Priority**: The surfer closest to the wave peak when taking off holds right-of-way.
