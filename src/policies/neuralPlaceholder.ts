@@ -12,20 +12,46 @@ import type {
 } from '../contracts/types.ts';
 import type { Policy } from './policy.ts';
 
+function decodeBase64ToBytes(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
+  }
+  return Uint8Array.from(Buffer.from(b64, 'base64'));
+}
+
+interface OrtSessionLike {
+  run(feeds: Record<string, unknown>): Promise<Record<string, { data: ArrayLike<number> }>>;
+}
+
+interface OrtModuleLike {
+  InferenceSession: {
+    create(buffer: Uint8Array): Promise<OrtSessionLike>;
+  };
+  Tensor: new (type: string, data: Float32Array, dims: number[]) => unknown;
+}
+
 /**
- * Reserved interface for future ONNX neural policy inference (`onnxruntime-web`).
- * Per SPEC Part 2 (#6, #7), `onnxruntime-web` is intentionally NOT added as a dependency
- * in the MVP release. This adapter validates contract & observation compatibility and
- * exposes the exact synchronous/warmed-cache inference hook for future GPU-trained PPO models.
+ * Real ONNX neural policy adapter backed by `onnxruntime-web`.
+ * Validates v2 contracts (`OBSERVATION_DIM = 16`, `NUM_DISCRETE_ACTIONS = 6`)
+ * and runs PPO-exported models exported by `packages/python_rl/export_onnx.py`.
  */
 export class NeuralOnnxPolicyPlaceholder implements Policy {
   public readonly id: string;
-  public readonly name: string;
+  public name: string;
   public readonly type: PolicyType = 'neural-onnx';
-  private readonly metadata: PolicyMetadata;
+  private metadata: PolicyMetadata;
   private isLoaded = false;
+  private session: OrtSessionLike | null = null;
+  private ortMod: OrtModuleLike | null = null;
+  private lastAction: ActionCode = ActionCode.WAIT;
+  private inferInFlight = false;
 
-  constructor(name = 'Future ONNX PPO Policy', metadata?: Partial<PolicyMetadata>) {
+  constructor(name = 'PPO ONNX Neural Policy', metadata?: Partial<PolicyMetadata>) {
     this.id = 'neural-onnx-policy';
     this.name = name;
     this.metadata = {
@@ -36,19 +62,16 @@ export class NeuralOnnxPolicyPlaceholder implements Policy {
       observationDim: OBSERVATION_DIM,
       actionVersion: CONTRACT_VERSION,
       numActions: NUM_DISCRETE_ACTIONS,
-      createdAtIso: '2026-11-14T00:00:00.000Z',
+      createdAtIso: '2026-11-17T00:00:00.000Z',
       trainingEpisodes: 0,
       paddleSpeedMultiplier: 1.0,
-      numCompetitors: 3,
+      numCompetitors: 15,
       avgCatchRate: 0,
       avgReward: 0,
       ...metadata,
     };
   }
 
-  /**
-   * Validate an exported ONNX model metadata envelope before loading.
-   */
   public validateCompatibility(envelope: SerializedPolicy): void {
     if (envelope.version !== CONTRACT_VERSION) {
       throw new Error(
@@ -69,20 +92,66 @@ export class NeuralOnnxPolicyPlaceholder implements Policy {
 
   public async loadOnnxModel(envelope: SerializedPolicy): Promise<void> {
     this.validateCompatibility(envelope);
-    throw new Error(
-      'ONNX runtime (onnxruntime-web) is reserved for Phase 2 GPU RL integration. See docs/gpu-rl-roadmap.md.'
+    if (!envelope.onnxModelBase64) {
+      throw new Error('Missing onnxModelBase64 payload in SerializedPolicy');
+    }
+    const ort = (await import('onnxruntime-web')) as unknown as OrtModuleLike;
+    const bytes = decodeBase64ToBytes(envelope.onnxModelBase64);
+    this.session = await ort.InferenceSession.create(bytes);
+    this.ortMod = ort;
+    this.metadata = { ...envelope.metadata };
+    this.name = envelope.metadata.name;
+    this.isLoaded = true;
+  }
+
+  public isSessionLoaded(): boolean {
+    return this.isLoaded && this.session !== null;
+  }
+
+  public async predictActionAsync(observation: Observation): Promise<ActionCode> {
+    if (observation.features.length !== OBSERVATION_DIM) {
+      throw new Error(`Expected ${OBSERVATION_DIM} continuous features`);
+    }
+    if (!this.session || !this.ortMod) {
+      return ActionCode.WAIT;
+    }
+    const input = new this.ortMod.Tensor(
+      'float32',
+      Float32Array.from(observation.features),
+      [1, OBSERVATION_DIM]
     );
+    const outputs = await this.session.run({ obs: input });
+    const logitsOut = outputs.logits ?? Object.values(outputs)[0];
+    const data = logitsOut?.data;
+    if (!data || data.length < NUM_DISCRETE_ACTIONS) {
+      return ActionCode.WAIT;
+    }
+    let bestAct: ActionCode = ActionCode.WAIT;
+    let bestScore = -Infinity;
+    for (let a = 0; a < NUM_DISCRETE_ACTIONS; a++) {
+      if (data[a] > bestScore) {
+        bestScore = data[a];
+        bestAct = a as ActionCode;
+      }
+    }
+    this.lastAction = bestAct;
+    return bestAct;
   }
 
   public selectAction(observation: Observation): ActionCode {
     if (observation.features.length !== OBSERVATION_DIM) {
       throw new Error(`Expected ${OBSERVATION_DIM} continuous features`);
     }
-    if (!this.isLoaded) {
-      // Safe deterministic fallback if invoked without a loaded ONNX session
+    if (!this.isLoaded || !this.session) {
       return ActionCode.WAIT;
     }
-    return ActionCode.WAIT;
+    if (!this.inferInFlight) {
+      this.inferInFlight = true;
+      void this.predictActionAsync(observation).finally(() => {
+        this.inferInFlight = false;
+      });
+    }
+    return this.lastAction;
   }
 
   public getMetadata(): PolicyMetadata {

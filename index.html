@@ -9,12 +9,12 @@
     <meta name="theme-color" content="#072a40" />
     <meta
       name="description"
-      content="Crowded Lineup — Mobile-first pixel-art surfing strategy game with built-in reinforcement learning."
+      content="Crowded Lineup — Multi-agent pixel-art surfing arena, RL evaluation platform, and governed telemetry intelligence."
     />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="./icon-192.svg" />
     <link rel="apple-touch-icon" href="./icon-192.svg" />
-    <title>Crowded Lineup — Pixel Surf &amp; RL</title>
+    <title>Crowded Lineup — Multi-Agent Surf &amp; RL Arena</title>
   </head>
   <body>
     <div id="app">
@@ -40,6 +40,14 @@
             aria-selected="false"
           >
             TRAIN AI
+          </button>
+          <button
+            id="tab-btn-intel"
+            class="tab-btn"
+            role="tab"
+            aria-selected="false"
+          >
+            ARENA &amp; INTEL
           </button>
         </nav>
       </header>
@@ -80,7 +88,7 @@
 
         <!-- Opponent & Status Sub-bar -->
         <div class="status-strip">
-          <span id="play-mode-badge" class="mode-badge">VS 3 RULE BOTS</span>
+          <span id="play-mode-badge" class="mode-badge">24 SURFERS • BOTS</span>
           <span id="play-status-msg" class="status-msg"
             >Tap ocean to set target • Hold PADDLE</span
           >
@@ -93,10 +101,15 @@
         <div class="canvas-stage">
           <canvas
             id="ocean-canvas"
-            width="160"
+            width="320"
             height="240"
             aria-label="Top-down pixel art surfing ocean"
           ></canvas>
+        </div>
+
+        <!-- Live Heat Standings Strip -->
+        <div id="heat-standings" class="heat-standings" aria-label="Live heat standings">
+          <span class="standing-chip">Loading lineup...</span>
         </div>
 
         <!-- Mobile Touch Controls: Hold PADDLE & CATCH button -->
@@ -111,8 +124,23 @@
           </button>
         </section>
 
-        <!-- Play Settings Bar: Paddle Speed Slider + Opponent Mode -->
+        <!-- Play Settings Bar: Crowd Preset, Paddle Speed, Rivals -->
         <section class="play-settings">
+          <div class="opponent-toggle-row">
+            <span class="toggle-label">Lineup Crowd:</span>
+            <button type="button" class="chip-btn preset-btn" data-preset="classic-4">
+              4
+            </button>
+            <button type="button" class="chip-btn preset-btn" data-preset="crowded-16">
+              16
+            </button>
+            <button type="button" class="chip-btn preset-btn active" data-preset="crowded-24">
+              24
+            </button>
+            <button type="button" class="chip-btn preset-btn" data-preset="chaos-40">
+              40
+            </button>
+          </div>
           <div class="slider-row">
             <label for="play-speed-slider">
               Paddle Speed: <strong id="play-speed-val">1.0x</strong>
@@ -133,7 +161,7 @@
               class="chip-btn active"
               type="button"
             >
-              Rule Bots
+              Archetype Bots
             </button>
             <button
               id="btn-mode-trained"
@@ -152,7 +180,7 @@
           <h2 class="section-title">Browser Q-Learning Lab (Web Worker)</h2>
           <p class="section-desc">
             Trains a tabular Q-learning surfer headlessly using the exact same
-            deterministic simulation and continuous normalized observations.
+            deterministic simulation and 16D continuous crowd observations.
           </p>
 
           <!-- Episode Count Selector: 1K / 5K / 20K -->
@@ -193,16 +221,16 @@
 
           <div class="control-group">
             <label for="train-comp-slider" class="slider-label">
-              <span>Rule-Bot Competitors</span>
-              <strong id="train-comp-val">2</strong>
+              <span>Lineup Competitors</span>
+              <strong id="train-comp-val">15</strong>
             </label>
             <input
               id="train-comp-slider"
               type="range"
               min="0"
-              max="5"
+              max="39"
               step="1"
-              value="2"
+              value="15"
             />
           </div>
 
@@ -294,6 +322,79 @@
             >
               🏄 PLAY AGAINST TRAINED AI
             </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ARENA & INTEL TAB -->
+      <section id="panel-intel" class="tab-panel" hidden>
+        <div class="train-card">
+          <h2 class="section-title">Arena Telemetry &amp; Governed Intelligence</h2>
+          <p class="section-desc">
+            Inspect live heat telemetry events, export JSONL streams, or sync with the
+            FastAPI + ACL-enforced Steward Intelligence backend.
+          </p>
+
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="m-label">SURFERS</span>
+              <span id="intel-surfers" class="m-val">24</span>
+            </div>
+            <div class="metric-box">
+              <span class="m-label">EVENTS</span>
+              <span id="intel-events" class="m-val">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="m-label">DROP-INS</span>
+              <span id="intel-dropins" class="m-val">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="m-label">COLLISIONS</span>
+              <span id="intel-collisions" class="m-val">0</span>
+            </div>
+          </div>
+
+          <div class="persist-buttons">
+            <button id="btn-export-telemetry" class="small-btn" type="button">
+              Export JSONL
+            </button>
+            <button id="btn-sync-api" class="small-btn" type="button">
+              Push to API
+            </button>
+            <button id="btn-refresh-lb" class="small-btn" type="button">
+              Sync Leaderboard
+            </button>
+            <span id="api-status-badge" class="small-btn">Local Mode</span>
+          </div>
+
+          <div class="control-group">
+            <span class="group-label">Heat Leaderboard (Local / API)</span>
+            <div id="leaderboard-list" class="leaderboard-list"></div>
+          </div>
+
+          <div class="persistence-section">
+            <label for="intel-principal-select" class="slider-label">
+              <span>Steward Query Principal (ACL Context)</span>
+            </label>
+            <select id="intel-principal-select" class="intel-select">
+              <option value="alice_alpha">alice_alpha (team_alpha • confidential)</option>
+              <option value="bob_beta">bob_beta (team_beta • confidential)</option>
+              <option value="steward_lead">steward_lead (public_league • restricted)</option>
+              <option value="guest_public">guest_public (public_league • public)</option>
+            </select>
+            <div class="intel-query-row">
+              <input
+                id="intel-query-input"
+                class="intel-input"
+                type="text"
+                placeholder="Ask Steward about drop-in rules, heat #1, or scouting..."
+                value="Explain drop-in priority rules and team_alpha peak strategy"
+              />
+              <button id="btn-ask-steward" class="small-btn" type="button">
+                Ask Steward
+              </button>
+            </div>
+            <pre id="intel-response-box" class="intel-response">Start the FastAPI backend (`uvicorn services.api.main:app`) to query ACL-enforced league documents &amp; heat citations.</pre>
           </div>
         </div>
       </section>

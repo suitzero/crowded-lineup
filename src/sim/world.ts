@@ -7,6 +7,7 @@ import {
 import type {
   ActionInput,
   EpisodeMetrics,
+  LineupPresetId,
   Observation,
   RewardBreakdown,
   StepResult,
@@ -18,16 +19,51 @@ import { nextRandom, normalizeSeed } from './prng.ts';
 
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   version: CONTRACT_VERSION,
-  width: 160,
+  width: 320,
   height: 240,
   dt: 0.1,
   maxSteps: 600,
-  numSurfers: 4,
-  maxWaves: 6,
-  maxWhitewaters: 24,
+  numSurfers: 16,
+  maxWaves: 10,
+  maxWhitewaters: 40,
   paddleSpeedMultiplier: 1.0,
   simplifiedWaves: false,
-  waveSpawnInterval: 7.5,
+  waveSpawnInterval: 5.2,
+};
+
+export const LINEUP_PRESETS: Record<LineupPresetId, Partial<WorldConfig>> = {
+  'classic-4': {
+    width: 160,
+    height: 240,
+    numSurfers: 4,
+    maxWaves: 6,
+    maxWhitewaters: 24,
+    waveSpawnInterval: 7.5,
+  },
+  'crowded-16': {
+    width: 320,
+    height: 240,
+    numSurfers: 16,
+    maxWaves: 10,
+    maxWhitewaters: 40,
+    waveSpawnInterval: 5.2,
+  },
+  'crowded-24': {
+    width: 320,
+    height: 240,
+    numSurfers: 24,
+    maxWaves: 10,
+    maxWhitewaters: 40,
+    waveSpawnInterval: 4.8,
+  },
+  'chaos-40': {
+    width: 320,
+    height: 240,
+    numSurfers: 40,
+    maxWaves: 12,
+    maxWhitewaters: 48,
+    waveSpawnInterval: 4.2,
+  },
 };
 
 function rand01(world: WorldState): number {
@@ -126,20 +162,22 @@ function spawnWhitewater(
 }
 
 /**
- * Find the best incoming catchable wave for a surfer at (sx, sy).
- * Returns wave slot index or -1 if none active.
+ * Find the best and second-best incoming catchable wave slots for a surfer.
  */
-export function findTargetWaveSlot(world: WorldState, surferId: number): number {
+export function findTopTwoWaveSlots(
+  world: WorldState,
+  surferId: number
+): [number, number] {
   const sy = world.surferY[surferId];
   const sx = world.surferX[surferId];
   let bestSlot = -1;
   let bestScore = Infinity;
+  let secondSlot = -1;
+  let secondScore = Infinity;
 
   for (let w = 0; w < world.config.maxWaves; w++) {
     if (world.waveActive[w] === 0) continue;
     const wy = world.waveY[w];
-    // Wave can still be caught if it is behind the surfer or within +8 units ahead of them
-    // and has not already reached the shallow shorezone
     if (wy > sy + 8.0 || wy > world.config.height - 40) continue;
 
     const dy = Math.max(0, sy - wy);
@@ -147,8 +185,13 @@ export function findTargetWaveSlot(world: WorldState, surferId: number): number 
     const dx = Math.abs(sx - world.wavePeakX[w]);
     const score = timeToReach * 18.0 + dx * 0.25 - world.waveQuality[w] * 4.0;
     if (score < bestScore) {
+      secondScore = bestScore;
+      secondSlot = bestSlot;
       bestScore = score;
       bestSlot = w;
+    } else if (score < secondScore) {
+      secondScore = score;
+      secondSlot = w;
     }
   }
 
@@ -161,7 +204,15 @@ export function findTargetWaveSlot(world: WorldState, surferId: number): number 
       }
     }
   }
-  return bestSlot;
+  return [bestSlot, secondSlot];
+}
+
+/**
+ * Find the best incoming catchable wave for a surfer at (sx, sy).
+ * Returns wave slot index or -1 if none active.
+ */
+export function findTargetWaveSlot(world: WorldState, surferId: number): number {
+  return findTopTwoWaveSlots(world, surferId)[0];
 }
 
 /**
@@ -253,19 +304,49 @@ export function createWorld(
     wwMaxAge: new Array(mww).fill(3.2),
   };
 
-  // Position surfers across the lineup zone
+  // Position surfers across a 3-tier staggered lineup zone (outside / pocket / inside)
+  const tiers = n >= 8 ? 3 : 1;
+  const tierYCenters = tiers === 3 ? [74, 93, 112] : [92];
   for (let i = 0; i < n; i++) {
-    const laneFrac = n === 1 ? 0.5 : (i + 0.5) / n;
-    const baseX = 28 + laneFrac * (config.width - 56);
-    const jitterX = n === 1 ? randRange(world, -18, 18) : randRange(world, -8, 8);
-    const jitterY = randRange(world, -10, 12);
+    const tierIdx = i % tiers;
+    const slotInTier = Math.floor(i / tiers);
+    const countInTier = Math.max(1, Math.ceil((n - tierIdx) / tiers));
+    const laneFrac = countInTier === 1 ? 0.5 : (slotInTier + 0.5) / countInTier;
+    const baseX = 22 + laneFrac * (config.width - 44);
+    const jitterX = n === 1 ? randRange(world, -18, 18) : randRange(world, -6, 6);
+    const jitterY = randRange(world, -6, 6);
     world.surferX[i] = clamp(baseX + jitterX, 16, config.width - 16);
-    world.surferY[i] = clamp(92 + jitterY, 68, 130);
+    world.surferY[i] = clamp(tierYCenters[tierIdx] + jitterY, 64, 130);
+  }
+
+  // Deterministic pairwise relaxation pass to guarantee no initial spawn collisions
+  const minSpawnDist = 8.5;
+  for (let iter = 0; iter < 6 && n > 1; iter++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = world.surferX[j] - world.surferX[i];
+        const dy = world.surferY[j] - world.surferY[i];
+        const distSq = dx * dx + dy * dy;
+        if (distSq < minSpawnDist * minSpawnDist) {
+          const dist = Math.max(0.1, Math.sqrt(distSq));
+          const push = (minSpawnDist - dist) * 0.55;
+          const nx = distSq < 0.01 ? (j % 2 === 0 ? 1 : -1) : dx / dist;
+          const ny = distSq < 0.01 ? 0 : dy / dist;
+          world.surferX[i] = clamp(world.surferX[i] - nx * push, 14, config.width - 14);
+          world.surferY[i] = clamp(world.surferY[i] - ny * push, 62, 132);
+          world.surferX[j] = clamp(world.surferX[j] + nx * push, 14, config.width - 14);
+          world.surferY[j] = clamp(world.surferY[j] + ny * push, 62, 132);
+        }
+      }
+    }
   }
 
   // Spawn initial ocean swells so the lineup immediately has waves approaching
   spawnWave(world, 34);
   spawnWave(world, 8);
+  if (config.width >= 240) {
+    spawnWave(world, 20);
+  }
 
   for (let i = 0; i < n; i++) {
     world.surferLastPotential[i] = computeInterceptionPotential(world, i);
@@ -324,7 +405,7 @@ export function cloneWorld(world: WorldState): WorldState {
 }
 
 /**
- * Compute the canonical continuous normalized observation for `surferId`.
+ * Compute the canonical continuous normalized observation for `surferId` (v2: 16 features).
  * All features are strictly bounded in [-1, 1] or [0, 1].
  */
 export function observe(world: WorldState, surferId: number): Observation {
@@ -336,7 +417,7 @@ export function observe(world: WorldState, surferId: number): Observation {
   const stamina = clamp(world.surferStamina[surferId], 0, 1);
   const status = world.surferState[surferId];
 
-  const waveSlot = findTargetWaveSlot(world, surferId);
+  const [waveSlot, secondSlot] = findTopTwoWaveSlots(world, surferId);
 
   let relPeakX = 0;
   let timeToWave = 1.0;
@@ -367,11 +448,29 @@ export function observe(world: WorldState, surferId: number): Observation {
     }
   }
 
+  let secondaryPeakRelX = 0;
+  let secondaryPeakTimeToWave = 1.0;
+  if (secondSlot !== -1) {
+    const secPeakX = world.wavePeakX[secondSlot];
+    const secY = world.waveY[secondSlot];
+    const secSpeed = Math.max(10, world.waveSpeed[secondSlot]);
+    secondaryPeakRelX = clamp((secPeakX - sx) / (config.width * 0.5), -1, 1);
+    secondaryPeakTimeToWave = clamp(((sy - secY) / secSpeed) / 6.0, -1, 1);
+  }
+
   // Relative cross-shore position compared to optimal break zone in [-1, 1]
   const relCrossShore = clamp((sy - (breakRefY + 8.0)) / (config.height * 0.4), -1, 1);
 
-  // Competitor pressure in [0, 1]: measures nearby competitors and inside priority threat
+  // Competitor pressure & spatial crowd sector features
   let competitorPressure = 0;
+  let leftCount = 0;
+  let centerCount = 0;
+  let rightCount = 0;
+  let insideThreatSum = 0;
+
+  const myPeakDist =
+    waveSlot !== -1 ? Math.abs(sx - world.wavePeakX[waveSlot]) : Infinity;
+
   for (let j = 0; j < config.numSurfers; j++) {
     if (j === surferId) continue;
     const dx = world.surferX[j] - sx;
@@ -379,16 +478,33 @@ export function observe(world: WorldState, surferId: number): Observation {
     const dist = Math.sqrt(dx * dx + dy * dy);
     let p = clamp(1.0 - dist / 45.0, 0, 1);
     if (waveSlot !== -1) {
-      const myPeakDist = Math.abs(sx - world.wavePeakX[waveSlot]);
       const otherPeakDist = Math.abs(world.surferX[j] - world.wavePeakX[waveSlot]);
       if (otherPeakDist < myPeakDist) {
         p = clamp(p * 1.35, 0, 1);
+        if (Math.abs(dy) <= 35.0 && world.surferState[j] !== SurferStatus.WIPED_OUT) {
+          insideThreatSum += clamp(1.0 - dist / 60.0, 0.15, 1.0);
+        }
       }
     }
     if (p > competitorPressure) {
       competitorPressure = p;
     }
+
+    if (world.surferState[j] !== SurferStatus.WIPED_OUT && Math.abs(dy) <= 40.0) {
+      if (dx >= -45.0 && dx < -6.0) {
+        leftCount += 1;
+      } else if (dx >= -6.0 && dx <= 6.0) {
+        centerCount += 1;
+      } else if (dx > 6.0 && dx <= 45.0) {
+        rightCount += 1;
+      }
+    }
   }
+
+  const crowdDensityLeft = clamp(leftCount / 6.0, 0, 1);
+  const crowdDensityCenter = clamp(centerCount / 4.0, 0, 1);
+  const crowdDensityRight = clamp(rightCount / 6.0, 0, 1);
+  const insidePriorityThreat = clamp(insideThreatSum / 3.0, 0, 1);
 
   const maxSpeedRef = 32.0 * config.paddleSpeedMultiplier;
   const surferVxNorm = clamp(vx / maxSpeedRef, -1, 1);
@@ -407,6 +523,12 @@ export function observe(world: WorldState, surferId: number): Observation {
     surferVxNorm,
     surferVyNorm,
     surferStatusNorm,
+    crowdDensityLeft,
+    crowdDensityCenter,
+    crowdDensityRight,
+    insidePriorityThreat,
+    secondaryPeakRelX,
+    secondaryPeakTimeToWave,
   ];
 
   // Sanity guard for length
@@ -429,6 +551,12 @@ export function observe(world: WorldState, surferId: number): Observation {
       surferVxNorm,
       surferVyNorm,
       surferStatusNorm,
+      crowdDensityLeft,
+      crowdDensityCenter,
+      crowdDensityRight,
+      insidePriorityThreat,
+      secondaryPeakRelX,
+      secondaryPeakTimeToWave,
     },
   };
 }
@@ -576,8 +704,9 @@ export function step(
 
     if (world.waveY[w] >= world.waveBreakStartY[w]) {
       const brokenDist = world.waveY[w] - world.waveBreakStartY[w];
+      const maxBreakWidth = Math.min(config.width * 0.65, 96.0);
       world.waveBreakWidth[w] = Math.min(
-        config.width * 0.85,
+        maxBreakWidth,
         6.0 + brokenDist * world.waveBreakSpreadRate[w]
       );
 
@@ -888,7 +1017,7 @@ export function step(
     const hasExistingPriorityRider =
       existingRider !== -1 &&
       world.surferState[existingRider] === SurferStatus.RIDING &&
-      world.surferRidingWaveId[waveSlot] !== undefined;
+      world.surferRidingWaveId[existingRider] === waveSlot;
 
     for (let idx = 0; idx < attempts.length; idx++) {
       const candidate = attempts[idx];

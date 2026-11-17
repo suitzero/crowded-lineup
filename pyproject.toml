@@ -1,0 +1,79 @@
+[project]
+name = "crowded-lineup-platform"
+version = "2.0.0"
+description = "Multi-agent surfing RL benchmark, batch/streaming telemetry platform, and ACL-enforced intelligence system"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26,<3",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5,<3",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+    "httpx>=0.27,<1",
+    "psycopg[binary]>=3.2,<4",
+    "boto3>=1.35,<2",
+    "pypdf>=5.0,<6",
+    "reportlab>=4.2,<5",
+    "pillow>=10.4,<12",
+    "prometheus-client>=0.21,<1",
+    "opentelemetry-api>=1.27,<2",
+    "opentelemetry-sdk>=1.27,<2",
+    "torch>=2.5,<3",
+    "onnx>=1.17,<2",
+    "onnxscript>=0.2,<1",
+    "onnxruntime>=1.19,<2",
+    "apache-beam>=2.60,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+    "ruff>=0.7,<1",
+    "mypy>=1.13,<2",
+    "types-boto3>=1.35,<2",
+]
+
+# Default to lightweight CPU PyTorch (~180MB) for fast local/CI builds;
+# swap URL to https://download.pytorch.org/whl/cu124 on NVIDIA GPU nodes.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["packages", "services", "pipelines", "data", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["packages", "services", "pipelines", "data", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+explicit_package_bases = true
+namespace_packages = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+mypy_path = "."
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = [
+    "packages/python_sim/tests",
+    "packages/python_rl/tests",
+    "services/api/tests",
+    "pipelines/streaming/tests",
+    "pipelines/batch/tests",
+]
+asyncio_mode = "auto"

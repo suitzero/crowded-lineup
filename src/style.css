@@ -29,7 +29,7 @@ body {
 }
 
 #app {
-  max-width: 480px;
+  max-width: 560px;
   min-height: 100dvh;
   margin: 0 auto;
   display: flex;
@@ -224,10 +224,10 @@ body {
 
 #ocean-canvas {
   width: 100%;
-  max-width: 340px;
-  aspect-ratio: 2 / 3;
+  max-width: 520px;
+  aspect-ratio: 4 / 3;
   height: auto;
-  max-height: 58dvh;
+  max-height: 54dvh;
   image-rendering: -moz-crisp-edges;
   image-rendering: crisp-edges;
   image-rendering: pixelated;
@@ -236,6 +236,36 @@ body {
   touch-action: none;
   cursor: crosshair;
   background: #072a40;
+}
+
+#ocean-canvas.classic-aspect {
+  max-width: 340px;
+  aspect-ratio: 2 / 3;
+}
+
+.heat-standings {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 10px;
+  background: #051826;
+  border-top: 1px solid var(--border-teal);
+  font-size: 0.66rem;
+}
+
+.standing-chip {
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-teal);
+  color: var(--text-light);
+}
+
+.standing-chip.is-you {
+  border-color: var(--accent-gold);
+  color: var(--accent-gold);
+  font-weight: 700;
 }
 
 /* Touch Controls */
@@ -550,4 +580,58 @@ body {
 
 .small-btn:hover {
   border-color: var(--accent-cyan);
+}
+
+.leaderboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #041521;
+  border: 1px solid var(--border-teal);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 0.7rem;
+}
+
+.lb-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 64px 58px;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 4px;
+  border-bottom: 1px solid rgba(28, 91, 125, 0.35);
+}
+
+.intel-select,
+.intel-input {
+  width: 100%;
+  background: #041521;
+  color: var(--text-light);
+  border: 1px solid var(--border-teal);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.72rem;
+}
+
+.intel-query-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+
+.intel-response {
+  background: #041521;
+  border: 1px solid var(--border-teal);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  color: var(--text-light);
+  user-select: text;
 }

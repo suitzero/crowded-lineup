@@ -23,19 +23,20 @@ The TypeScript MVP was designed from day one around six forward-compatibility in
 
 ---
 
-## 2. Versioned Contracts Specification (`v1`)
+## 2. Versioned Contracts Specification (`v2` — Expanded from `v1`)
 
-All serialized payloads between TypeScript and future Python/PyTorch tooling validate `version === 1`:
+All serialized payloads between TypeScript and Python/PyTorch tooling validate `version === 2`:
 
 | Contract | Source Type | Key Fields & Invariants |
 | :--- | :--- | :--- |
-| **WorldConfig** | `WorldConfig` | `version: 1`, `width: 160`, `height: 240`, `dt: 0.1`, `numSurfers`, `maxWaves: 6`, `maxWhitewaters: 24`, `paddleSpeedMultiplier: [0.6, 1.6]` |
-| **WorldState** | `WorldState` | `version: 1`, `seed: uint32`, `rngState: uint32`, `stepCount`, flat numeric arrays of length `numSurfers`, `maxWaves`, `maxWhitewaters` |
-| **Observation** | `Observation` | `version: 1`, `surferId`, `features: number[10]` (`relPeakX`, `timeToWave`, `relCrossShore`, `stamina`, `competitorPressure`, `waveQuality`, `waveBreakingProgress`, `surferVxNorm`, `surferVyNorm`, `surferStatusNorm`) |
-| **Action** | `ActionCode` / `SurferAction` | `version: 1`, discrete `0..5` (`WAIT=0`, `LEFT=1`, `RIGHT=2`, `OUT=3`, `IN=4`, `CATCH=5`) |
-| **Reward** | `RewardBreakdown` / `StepResult` | `version: 1`, `catchReward`, `qualityBonus`, `priorityBonus`, `rideReward`, `collisionPenalty`, `dropInPenalty`, `staminaPenalty`, `shapingReward` |
-| **EpisodeMetrics** | `EpisodeMetrics` | `version: 1`, `totalWavesSpawned`, `surferCatches[]`, `surferCatchRates[]`, `surferScores[]`, `surferCollisions[]`, `surferDropIns[]` |
-| **PolicyMetadata** | `PolicyMetadata` | `version: 1`, `policyType`, `observationVersion: 1`, `observationDim: 10`, `actionVersion: 1`, `numActions: 6` |
+| **WorldConfig** | `WorldConfig` | `version: 2`, `width: 160 | 320`, `height: 240`, `dt: 0.1`, `numSurfers: 4..40`, `maxWaves: 6..12`, `maxWhitewaters: 24..48`, `paddleSpeedMultiplier: [0.6, 1.6]` |
+| **WorldState** | `WorldState` | `version: 2`, `seed: uint32`, `rngState: uint32`, `stepCount`, flat numeric arrays of length `numSurfers`, `maxWaves`, `maxWhitewaters` |
+| **Observation** | `Observation` | `version: 2`, `surferId`, `features: number[16]` (10 core features + `crowdDensityLeft`, `crowdDensityCenter`, `crowdDensityRight`, `insidePriorityThreat`, `secondaryPeakRelX`, `secondaryPeakTimeToWave`) |
+| **Action** | `ActionCode` / `SurferAction` | `version: 2`, discrete `0..5` (`WAIT=0`, `LEFT=1`, `RIGHT=2`, `OUT=3`, `IN=4`, `CATCH=5`) |
+| **Reward** | `RewardBreakdown` / `StepResult` | `version: 2`, `catchReward`, `qualityBonus`, `priorityBonus`, `rideReward`, `collisionPenalty`, `dropInPenalty`, `staminaPenalty`, `shapingReward` |
+| **EpisodeMetrics** | `EpisodeMetrics` | `version: 2`, `totalWavesSpawned`, `surferCatches[]`, `surferCatchRates[]`, `surferScores[]`, `surferCollisions[]`, `surferDropIns[]` |
+| **PolicyMetadata** | `PolicyMetadata` | `version: 2`, `policyType`, `observationVersion: 2`, `observationDim: 16`, `actionVersion: 2`, `numActions: 6` |
+| **TelemetryEvent / Batch** | `HeatTelemetryBatch` | `version: 2`, `heatId`, `tenantId`, `agentRoster[]`, `events[]` |
 
 ---
 
@@ -119,13 +120,9 @@ When Phase 2 begins, a standalone `python_rl/` package will be added with the fo
 
 ---
 
-## 6. Phased Migration Steps
+## 6. Phased Migration Status
 
-1. **Phase 1 (Complete — Current MVP)**:
-   - Data-oriented TypeScript simulation (`src/sim/world.ts`), versioned contracts (`src/contracts/types.ts`), continuous 10D observations, reference scenario fixtures (`tests/fixtures/reference-scenarios.json`), browser Web Worker Q-learning (`src/training/trainingWorker.ts`), and `NeuralOnnxPolicyPlaceholder`.
-2. **Phase 2 (Vectorized PyTorch Simulator & Parity Verification)**:
-   - Implement `python_rl/env_cuda.py` and verify 100% numerical parity against `tests/fixtures/reference-scenarios.json`.
-3. **Phase 3 (GPU PPO + Self-Play Training & ONNX Export)**:
-   - Train multi-agent PPO across 4096 parallel CUDA environments with league self-play and export `.onnx` + `SerializedPolicy` v1 metadata.
-4. **Phase 4 (Mobile Browser ONNX Inference)**:
-   - Add `onnxruntime-web` (WASM/WebGPU backend) inside `src/policies/neuralPlaceholder.ts` to run the exported 128x128 MLP in `< 0.2ms` per step on mobile Chrome.
+1. **Phase 1 (Complete)**: Data-oriented TS simulation (`src/sim/world.ts`), `v2` 16D crowd-sector observations, 4–40 surfer presets, telemetry event recording (`src/sim/telemetry.ts`), and 4 deterministic reference scenarios (`tests/fixtures/reference-scenarios.json`).
+2. **Phase 2 (Complete)**: Vectorized PyTorch simulator (`packages/python_sim/env_vec.py`) with bit-exact Mulberry32 PRNG and automated cross-runtime parity verification (`packages/python_sim/tests/test_ts_parity.py`).
+3. **Phase 3 (Complete)**: Multi-agent curriculum & league self-play PPO (`packages/python_rl/self_play.py`) with opset-17 ONNX export (`packages/python_rl/export_onnx.py`).
+4. **Phase 4 (Complete)**: `onnxruntime-web` integration inside `src/policies/neuralPlaceholder.ts` plus FastAPI leaderboard/telemetry & Steward Intelligence platform (`services/api/`).

@@ -5,6 +5,7 @@ export interface RenderOptions {
   touchTarget: { x: number; y: number } | null;
   paddleHeld: boolean;
   surferLabels: string[];
+  showDensityStrip?: boolean;
 }
 
 const SURFER_PALETTES = [
@@ -15,6 +16,20 @@ const SURFER_PALETTES = [
   { board: '#f15bb5', suit: '#00bbf9', accent: '#fee440' }, // Surfer 4
   { board: '#9b5de5', suit: '#00f5d4', accent: '#ffffff' }, // Surfer 5
 ];
+
+function getSurferPalette(index: number): { board: string; suit: string; accent: string } {
+  if (index < SURFER_PALETTES.length) {
+    return SURFER_PALETTES[index];
+  }
+  // Procedural deterministic pixel-art palette for 40+ surfer lineups
+  const hue = (index * 137.508) % 360;
+  const suitHue = (hue + 150) % 360;
+  return {
+    board: `hsl(${Math.round(hue)}, 88%, 62%)`,
+    suit: `hsl(${Math.round(suitHue)}, 78%, 48%)`,
+    accent: '#e8f7fc',
+  };
+}
 
 /**
  * Pure 2D pixel-art renderer for `WorldState`.
@@ -69,6 +84,36 @@ export class OceanCanvasRenderer {
 
     // 5. Surfer pixel sprites + status indicators
     this.drawSurfers(ctx, world, options.surferLabels);
+
+    // 6. Optional lineup density strip along top edge
+    if (options.showDensityStrip !== false && world.config.numSurfers >= 8) {
+      this.drawCrowdDensityStrip(ctx, world);
+    }
+  }
+
+  private drawCrowdDensityStrip(
+    ctx: CanvasRenderingContext2D,
+    world: WorldState
+  ): void {
+    const bins = 16;
+    const binW = world.config.width / bins;
+    const counts = new Array(bins).fill(0);
+    for (let i = 0; i < world.config.numSurfers; i++) {
+      if (world.surferState[i] === SurferStatus.WIPED_OUT) continue;
+      const b = Math.min(bins - 1, Math.max(0, Math.floor(world.surferX[i] / binW)));
+      counts[b] += 1;
+    }
+    for (let b = 0; b < bins; b++) {
+      const c = counts[b];
+      if (c === 0) continue;
+      ctx.fillStyle =
+        c >= 4
+          ? 'rgba(255, 77, 109, 0.8)'
+          : c >= 2
+            ? 'rgba(255, 217, 61, 0.65)'
+            : 'rgba(0, 245, 212, 0.45)';
+      ctx.fillRect(Math.round(b * binW) + 1, 1, Math.max(2, Math.round(binW) - 2), 2);
+    }
   }
 
   private drawOceanBackground(
@@ -292,7 +337,7 @@ export class OceanCanvasRenderer {
       const x = Math.round(world.surferX[i]);
       const y = Math.round(world.surferY[i]);
       const status = world.surferState[i];
-      const palette = SURFER_PALETTES[i % SURFER_PALETTES.length];
+      const palette = getSurferPalette(i);
 
       if (status === SurferStatus.WIPED_OUT) {
         // Wiped out splash ring + floating board

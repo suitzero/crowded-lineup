@@ -8,9 +8,9 @@ A playable game that runs smoothly in Android Chrome, can be installed as a PWA,
 
 ## Tech stack
 
-- TypeScript, Vite (vanilla-ts), HTML Canvas 2D, CSS responsive touch controls
-- Web Worker for reinforcement learning, Vitest for tests
-- No React, Unity, Godot, Python backend, or physics libraries. No cloud services or external APIs.
+- TypeScript, Vite (vanilla-ts), HTML Canvas 2D, CSS responsive touch controls, `onnxruntime-web`
+- Web Worker for tabular Q-learning, Vitest for tests
+- Python 3.12 (`uv`, `ruff`, `mypy`, `FastAPI`, `Pydantic v2`), vectorized PyTorch PPO/self-play, Apache Beam, event-time watermark streaming, PostgreSQL 16 + `pgvector` (RLS + append-only audit), MinIO/GCS blob storage, and Terraform GCP IaC (see `README.md` and `docs/adr/`)
 
 ## Visual design
 

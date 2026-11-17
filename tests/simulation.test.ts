@@ -16,7 +16,9 @@ import {
 } from '../src/policies/storage.ts';
 import { SeededRng } from '../src/sim/prng.ts';
 import { replayAndVerifyScenario } from '../src/sim/scenarios.ts';
+import { TelemetryRecorder } from '../src/sim/telemetry.ts';
 import {
+  LINEUP_PRESETS,
   cloneWorld,
   createWorld,
   getEpisodeMetrics,
@@ -382,5 +384,45 @@ describe('Crowded Lineup — Deterministic Simulation & RL Suite', () => {
       expect(result.mismatches).toEqual([]);
       expect(result.passed).toBe(true);
     }
+  });
+
+  it('11. Crowded 24 & 40-surfer presets spawn safely without overlaps, compute 16D crowd sectors, and emit deterministic telemetry', () => {
+    const world40 = createWorld({ ...LINEUP_PRESETS['chaos-40'], maxSteps: 20 }, 999);
+    expect(world40.config.numSurfers).toBe(40);
+    expect(world40.config.width).toBe(320);
+
+    // Ensure relaxation pass leaves pairwise distance above collisionRadius (6.5)
+    for (let i = 0; i < world40.config.numSurfers; i++) {
+      for (let j = i + 1; j < world40.config.numSurfers; j++) {
+        const dx = world40.surferX[j] - world40.surferX[i];
+        const dy = world40.surferY[j] - world40.surferY[i];
+        expect(Math.hypot(dx, dy)).toBeGreaterThanOrEqual(6.6);
+      }
+      const obs = observe(world40, i);
+      expect(obs.features.length).toBe(16);
+      for (const f of obs.features) {
+        expect(f).toBeGreaterThanOrEqual(-1.0);
+        expect(f).toBeLessThanOrEqual(1.0);
+      }
+    }
+
+    const recorder = new TelemetryRecorder(world40, {
+      heatId: 'test-heat-40',
+      tenantId: 'team_alpha',
+      preset: 'chaos-40',
+    });
+
+    const bots = Array.from({ length: 40 }, (_, i) => new RuleBotPolicy(i + 1));
+    while (!isEpisodeDone(world40)) {
+      const actions = bots.map((b, i) => b.selectAction(observe(world40, i), world40, i));
+      const res = step(world40, actions);
+      recorder.recordStep(world40, res, res.done ? getEpisodeMetrics(world40) : undefined);
+    }
+
+    const events = recorder.getEvents();
+    expect(events[0].eventType).toBe('heat_started');
+    expect(events[events.length - 1].eventType).toBe('heat_completed');
+    const jsonlLines = recorder.toJsonl().trim().split('\n');
+    expect(jsonlLines.length).toBe(events.length);
   });
 });

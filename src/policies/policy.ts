@@ -1,6 +1,8 @@
 import {
   ActionCode,
   CONTRACT_VERSION,
+  NUM_DISCRETE_ACTIONS,
+  OBSERVATION_DIM,
 } from '../contracts/types.ts';
 import type {
   ActionInput,
@@ -113,9 +115,9 @@ export class HumanPolicy implements Policy {
       name: this.name,
       policyType: 'human',
       observationVersion: CONTRACT_VERSION,
-      observationDim: 10,
+      observationDim: OBSERVATION_DIM,
       actionVersion: CONTRACT_VERSION,
-      numActions: 6,
+      numActions: NUM_DISCRETE_ACTIONS,
       createdAtIso: '2026-01-01T00:00:00.000Z',
       trainingEpisodes: 0,
       paddleSpeedMultiplier: 1.0,

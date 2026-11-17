@@ -1,8 +1,8 @@
-export const CONTRACT_VERSION = 1 as const;
+export const CONTRACT_VERSION = 2 as const;
 
 /**
  * Discrete action codes shared across tabular Q-learning, rule bots,
- * human keyboard controls, and future neural policy heads.
+ * human keyboard controls, and neural/ONNX policy heads.
  */
 export const ActionCode = {
   WAIT: 0,
@@ -36,6 +36,12 @@ export const SurferStatus = {
 } as const;
 
 export type SurferStatus = (typeof SurferStatus)[keyof typeof SurferStatus];
+
+export type LineupPresetId =
+  | 'classic-4'
+  | 'crowded-16'
+  | 'crowded-24'
+  | 'chaos-40';
 
 /**
  * Action input for a single surfer on one simulation step.
@@ -78,7 +84,7 @@ export interface WorldConfig {
 /**
  * Flat, data-oriented world state representation.
  * All dynamic entity attributes are stored in numeric arrays for fast cloning,
- * JSON serialization, and direct parity with batched GPU tensor layouts.
+ * JSON serialization, and direct parity with batched Python/CUDA tensor layouts.
  */
 export interface WorldState {
   version: typeof CONTRACT_VERSION;
@@ -133,19 +139,18 @@ export interface WorldState {
 }
 
 /**
- * Canonical continuous normalized observation vector (10 features in [-1, 1] or [0, 1]).
- * Tabular Q-learning discretizes this internally, while future neural policies consume
- * the continuous `features` vector directly.
+ * Canonical continuous normalized observation vector (v2: 16 features in [-1, 1] or [0, 1]).
+ * Features [0..9] preserve v1 semantics; [10..15] add spatial crowd sectors & secondary peak awareness.
  */
-export const OBSERVATION_DIM = 10 as const;
+export const OBSERVATION_DIM = 16 as const;
 
 export interface Observation {
   version: typeof CONTRACT_VERSION;
   surferId: number;
   /**
-   * Canonical normalized feature vector (length = OBSERVATION_DIM = 10):
-   * [0] relPeakX: relative horizontal position to target wave peak in [-1, 1]
-   * [1] timeToWave: normalized estimated time until wave reaches surfer in [-1, 1]
+   * Canonical normalized feature vector (length = OBSERVATION_DIM = 16):
+   * [0] relPeakX: relative horizontal position to primary target wave peak in [-1, 1]
+   * [1] timeToWave: normalized estimated time until primary wave reaches surfer in [-1, 1]
    * [2] relCrossShore: surfer cross-shore position relative to break zone in [-1, 1]
    * [3] stamina: surfer stamina in [0, 1]
    * [4] competitorPressure: nearby competitor crowding/priority pressure in [0, 1]
@@ -154,9 +159,15 @@ export interface Observation {
    * [7] surferVxNorm: normalized surfer horizontal velocity in [-1, 1]
    * [8] surferVyNorm: normalized surfer cross-shore velocity in [-1, 1]
    * [9] surferStatusNorm: 0 = free, 0.5 = riding, 1.0 = wiped out
+   * [10] crowdDensityLeft: normalized surfer density to left [-45, -6] in [0, 1]
+   * [11] crowdDensityCenter: normalized surfer density in local pocket [-6, +6] in [0, 1]
+   * [12] crowdDensityRight: normalized surfer density to right [+6, +45] in [0, 1]
+   * [13] insidePriorityThreat: normalized threat from surfers closer to primary peak in [0, 1]
+   * [14] secondaryPeakRelX: relative horizontal position to secondary wave peak in [-1, 1]
+   * [15] secondaryPeakTimeToWave: normalized time until secondary wave reaches surfer in [-1, 1]
    */
   features: number[];
-  /** Named view of the primary features used by Q-table discretization and debugging */
+  /** Named view of features used by Q-table discretization, RuleBots, and debugging */
   named: {
     relPeakX: number;
     timeToWave: number;
@@ -168,6 +179,12 @@ export interface Observation {
     surferVxNorm: number;
     surferVyNorm: number;
     surferStatusNorm: number;
+    crowdDensityLeft: number;
+    crowdDensityCenter: number;
+    crowdDensityRight: number;
+    insidePriorityThreat: number;
+    secondaryPeakRelX: number;
+    secondaryPeakTimeToWave: number;
   };
 }
 
@@ -220,6 +237,12 @@ export interface EpisodeMetrics {
  */
 export type PolicyType = 'human' | 'rule-bot' | 'q-table' | 'neural-onnx';
 
+export type BotArchetype =
+  | 'local-charger'
+  | 'shoulder-hopper'
+  | 'patient-picker'
+  | 'rookie';
+
 /**
  * Versioned metadata attached to any saved or exported policy.
  */
@@ -250,7 +273,7 @@ export interface SerializedPolicy {
 }
 
 /**
- * Deterministic reference scenario fixture for cross-runtime (TypeScript <-> PyTorch/CUDA) parity tests.
+ * Deterministic reference scenario fixture for cross-runtime (TypeScript <-> Python/PyTorch) parity tests.
  */
 export interface ReferenceScenarioStep {
   stepIndex: number;
@@ -271,4 +294,47 @@ export interface ReferenceScenario {
   config: WorldConfig;
   steps: ReferenceScenarioStep[];
   expectedMetrics: EpisodeMetrics;
+}
+
+export type TelemetryEventType =
+  | 'heat_started'
+  | 'wave_spawned'
+  | 'takeoff_caught'
+  | 'drop_in_violation'
+  | 'surfer_collision'
+  | 'heat_completed';
+
+export interface TelemetryEvent {
+  version: typeof CONTRACT_VERSION;
+  eventId: string;
+  heatId: string;
+  tenantId: string;
+  eventType: TelemetryEventType;
+  stepCount: number;
+  timeSec: number;
+  seed: number;
+  surferId?: number;
+  otherSurferId?: number;
+  agentPolicyId?: string;
+  waveId?: number;
+  x?: number;
+  y?: number;
+  rewardDelta?: number;
+  metadata?: Record<string, string | number | boolean>;
+}
+
+export interface HeatTelemetryBatch {
+  version: typeof CONTRACT_VERSION;
+  heatId: string;
+  tenantId: string;
+  preset: LineupPresetId | 'custom';
+  config: WorldConfig;
+  agentRoster: Array<{
+    surferId: number;
+    agentId: string;
+    policyType: PolicyType;
+    label: string;
+  }>;
+  events: TelemetryEvent[];
+  metrics?: EpisodeMetrics;
 }

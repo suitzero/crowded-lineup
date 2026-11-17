@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: crowded
+      POSTGRES_PASSWORD: crowded_dev_password
+      POSTGRES_DB: crowded_lineup
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crowded -d crowded_lineup"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: crowded_minio
+      MINIO_ROOT_PASSWORD: crowded_minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.4
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    environment:
+      CROWDED_DATABASE_URL: postgresql://crowded:crowded_dev_password@postgres:5432/crowded_lineup
+      CROWDED_ENVIRONMENT: local-compose
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redpanda:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  stream-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    command: ["uv", "run", "python", "-m", "pipelines.streaming.worker"]
+    environment:
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+      - redpanda

@@ -30,6 +30,7 @@ export function discretizeObservation(obs: Observation): string {
   const relCrossShore = obs.features[2];
   const stamina = obs.features[3];
   const competitorPressure = obs.features[4];
+  const insidePriorityThreat = obs.features[13] ?? 0;
 
   let peakBin = 2;
   if (relPeakX < -0.2) peakBin = 0;
@@ -55,7 +56,8 @@ export function discretizeObservation(obs: Observation): string {
   else if (stamina < 0.6) stamBin = 1;
   else stamBin = 2;
 
-  const pressureBin = competitorPressure >= 0.45 ? 1 : 0;
+  const pressureBin =
+    competitorPressure >= 0.45 || insidePriorityThreat >= 0.5 ? 1 : 0;
 
   return `${peakBin}:${timeBin}:${crossBin}:${stamBin}:${pressureBin}`;
 }

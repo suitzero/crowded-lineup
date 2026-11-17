@@ -11,13 +11,19 @@ import {
   CONTRACT_VERSION,
   SurferStatus,
 } from './contracts/types.ts';
-import type { ActionInput, SurferAction, WorldState } from './contracts/types.ts';
+import type {
+  ActionInput,
+  BotArchetype,
+  LineupPresetId,
+  SurferAction,
+  WorldState,
+} from './contracts/types.ts';
 import { HumanPolicy } from './policies/policy.ts';
 import type { Policy } from './policies/policy.ts';
 import { QTablePolicy } from './policies/qTable.ts';
 import { RuleBotPolicy } from './policies/ruleBot.ts';
 import {
-  deserializePolicyFromJsonString,
+  deserializeAnyPolicyFromJsonString,
   hasSavedPolicyInLocalStorage,
   loadPolicyFromLocalStorage,
   savePolicyToLocalStorage,
@@ -25,8 +31,12 @@ import {
 } from './policies/storage.ts';
 import { OceanCanvasRenderer } from './render/canvasRenderer.ts';
 import { TrainingChartRenderer } from './render/chartRenderer.ts';
+import { TelemetryRecorder } from './sim/telemetry.ts';
+import type { AgentRosterEntry } from './sim/telemetry.ts';
 import {
+  LINEUP_PRESETS,
   createWorld,
+  getEpisodeMetrics,
   isEpisodeDone,
   observe,
   step,
@@ -43,35 +53,104 @@ function getEl<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+const API_BASE =
+  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL ??
+  'http://127.0.0.1:8000';
+
+const BOT_ARCHETYPES: BotArchetype[] = [
+  'local-charger',
+  'shoulder-hopper',
+  'patient-picker',
+  'rookie',
+];
+
+function buildBotPool(count: number): RuleBotPolicy[] {
+  const pool: RuleBotPolicy[] = [];
+  for (let i = 1; i <= count; i++) {
+    const archetype = BOT_ARCHETYPES[(i - 1) % BOT_ARCHETYPES.length];
+    const aggression = 0.58 + ((i * 11) % 38) / 100;
+    pool.push(new RuleBotPolicy(i, aggression, archetype));
+  }
+  return pool;
+}
+
 // --- Application State ---
+let heatCounter = 1;
 let heatSeed = 1042;
+let activePreset: LineupPresetId = 'crowded-24';
 let playPaddleSpeed = 1.0;
 let playVsTrainedAi = false;
 
 const humanPolicy = new HumanPolicy();
-const ruleBots: RuleBotPolicy[] = [
-  new RuleBotPolicy(1, 0.8),
-  new RuleBotPolicy(2, 0.72),
-  new RuleBotPolicy(3, 0.65),
-];
+const ruleBots: RuleBotPolicy[] = buildBotPool(40);
 
 let activeQPolicy: QTablePolicy =
   loadPolicyFromLocalStorage() ?? new QTablePolicy('Trained Q-Surfer');
+let activeNeuralPolicy: Policy | null = null;
 
-let world: WorldState = createWorld(
-  {
-    numSurfers: 4,
-    paddleSpeedMultiplier: playPaddleSpeed,
-    maxSteps: 1200,
-  },
-  heatSeed
-);
+function getSelectedAiPolicy(): Policy {
+  return activeNeuralPolicy ?? activeQPolicy;
+}
+
+function createHeatWorld(preset: LineupPresetId, seed: number): WorldState {
+  const presetCfg = LINEUP_PRESETS[preset];
+  return createWorld(
+    {
+      ...presetCfg,
+      paddleSpeedMultiplier: playPaddleSpeed,
+      maxSteps: 1200,
+    },
+    seed
+  );
+}
+
+function buildRoster(numSurfers: number): AgentRosterEntry[] {
+  const roster: AgentRosterEntry[] = [
+    {
+      surferId: 0,
+      agentId: 'human-player',
+      policyType: 'human',
+      label: 'YOU',
+    },
+  ];
+  for (let i = 1; i < numSurfers; i++) {
+    if (playVsTrainedAi && i === 1) {
+      const aiPol = getSelectedAiPolicy();
+      roster.push({
+        surferId: i,
+        agentId: `${aiPol.type}-${aiPol.getMetadata().trainingEpisodes}`,
+        policyType: aiPol.type,
+        label: aiPol.type === 'neural-onnx' ? 'PPO' : 'Q-AI',
+      });
+    } else {
+      const bot = ruleBots[(i - 1) % ruleBots.length];
+      roster.push({
+        surferId: i,
+        agentId: bot.id,
+        policyType: 'rule-bot',
+        label: `B${i}`,
+      });
+    }
+  }
+  return roster;
+}
+
+let world: WorldState = createHeatWorld(activePreset, heatSeed);
+let activeRoster: AgentRosterEntry[] = buildRoster(world.config.numSurfers);
+let telemetry = new TelemetryRecorder(world, {
+  heatId: `heat-${heatCounter}-${heatSeed}`,
+  tenantId: 'public_league',
+  preset: activePreset,
+  roster: activeRoster,
+});
 
 // --- DOM Elements ---
 const tabBtnPlay = getEl<HTMLButtonElement>('tab-btn-play');
 const tabBtnTrain = getEl<HTMLButtonElement>('tab-btn-train');
+const tabBtnIntel = getEl<HTMLButtonElement>('tab-btn-intel');
 const panelPlay = getEl<HTMLElement>('panel-play');
 const panelTrain = getEl<HTMLElement>('panel-train');
+const panelIntel = getEl<HTMLElement>('panel-intel');
 
 const hudWaves = getEl<HTMLElement>('hud-waves');
 const hudCatches = getEl<HTMLElement>('hud-catches');
@@ -83,8 +162,12 @@ const playStatusMsg = getEl<HTMLElement>('play-status-msg');
 const btnResetHeat = getEl<HTMLButtonElement>('btn-reset-heat');
 
 const oceanCanvas = getEl<HTMLCanvasElement>('ocean-canvas');
+const heatStandings = getEl<HTMLElement>('heat-standings');
 const btnPaddle = getEl<HTMLButtonElement>('btn-paddle');
 const btnCatch = getEl<HTMLButtonElement>('btn-catch');
+const presetButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>('.preset-btn')
+);
 const playSpeedSlider = getEl<HTMLInputElement>('play-speed-slider');
 const playSpeedVal = getEl<HTMLElement>('play-speed-val');
 const btnModeBots = getEl<HTMLButtonElement>('btn-mode-bots');
@@ -114,6 +197,21 @@ const btnExportJson = getEl<HTMLButtonElement>('btn-export-json');
 const inputImportJson = getEl<HTMLInputElement>('input-import-json');
 const btnPlayVsAi = getEl<HTMLButtonElement>('btn-play-vs-ai');
 
+// Arena & Intel Tab Elements
+const intelSurfers = getEl<HTMLElement>('intel-surfers');
+const intelEvents = getEl<HTMLElement>('intel-events');
+const intelDropIns = getEl<HTMLElement>('intel-dropins');
+const intelCollisions = getEl<HTMLElement>('intel-collisions');
+const btnExportTelemetry = getEl<HTMLButtonElement>('btn-export-telemetry');
+const btnSyncApi = getEl<HTMLButtonElement>('btn-sync-api');
+const btnRefreshLb = getEl<HTMLButtonElement>('btn-refresh-lb');
+const apiStatusBadge = getEl<HTMLElement>('api-status-badge');
+const leaderboardList = getEl<HTMLElement>('leaderboard-list');
+const intelPrincipalSelect = getEl<HTMLSelectElement>('intel-principal-select');
+const intelQueryInput = getEl<HTMLInputElement>('intel-query-input');
+const btnAskSteward = getEl<HTMLButtonElement>('btn-ask-steward');
+const intelResponseBox = getEl<HTMLElement>('intel-response-box');
+
 const oceanRenderer = new OceanCanvasRenderer(oceanCanvas);
 const chartRenderer = new TrainingChartRenderer(trainChartCanvas);
 
@@ -139,7 +237,6 @@ btnMute.addEventListener('click', (e) => {
   }
 });
 
-// Resume AudioContext and start BGM after the first pointer interaction
 window.addEventListener(
   'pointerdown',
   (e) => {
@@ -154,30 +251,96 @@ window.addEventListener(
   { passive: true }
 );
 
-// --- Helper: Update Policy Summary UI ---
 function refreshPolicySummaryUi(): void {
-  const meta = activeQPolicy.getMetadata();
-  const states = activeQPolicy.getStateCount();
+  const aiPol = getSelectedAiPolicy();
+  const meta = aiPol.getMetadata();
   const catchPct = (meta.avgCatchRate * 100).toFixed(1);
-  policySummaryText.textContent = `Policy: ${meta.name} (${meta.trainingEpisodes} eps, ${catchPct}% catch, ${states} states)`;
+  if (aiPol.type === 'neural-onnx') {
+    policySummaryText.textContent = `Policy: ${meta.name} [ONNX PPO] (${meta.trainingEpisodes} eps, ${catchPct}% catch)`;
+  } else {
+    const states = activeQPolicy.getStateCount();
+    policySummaryText.textContent = `Policy: ${meta.name} (${meta.trainingEpisodes} eps, ${catchPct}% catch, ${states} states)`;
+  }
+}
+
+function updateHeatStandingsUi(): void {
+  const ranked = Array.from({ length: world.config.numSurfers }, (_, idx) => ({
+    idx,
+    label: activeRoster[idx]?.label ?? `S${idx}`,
+    score: Math.round(world.surferScore[idx]),
+    catches: world.surferCatches[idx],
+    dropIns: world.surferDropIns[idx],
+  })).sort((a, b) => b.score - a.score || b.catches - a.catches);
+
+  const top = ranked.slice(0, 5);
+  if (!top.some((r) => r.idx === 0)) {
+    const youRow = ranked.find((r) => r.idx === 0);
+    if (youRow) top.push(youRow);
+  }
+
+  heatStandings.innerHTML = '';
+  for (const row of top) {
+    const rankPos = ranked.findIndex((r) => r.idx === row.idx) + 1;
+    const chip = document.createElement('span');
+    chip.className = row.idx === 0 ? 'standing-chip is-you' : 'standing-chip';
+    chip.textContent = `#${rankPos} ${row.label}: ${row.score} (${row.catches}w)`;
+    heatStandings.appendChild(chip);
+  }
+}
+
+function refreshIntelStatsUi(): void {
+  intelSurfers.textContent = String(world.config.numSurfers);
+  intelEvents.textContent = String(telemetry.getEvents().length);
+  intelDropIns.textContent = String(
+    world.surferDropIns.reduce((acc, v) => acc + v, 0)
+  );
+  intelCollisions.textContent = String(
+    world.surferCollisions.reduce((acc, v) => acc + v, 0)
+  );
+
+  // Render local heat leaderboard fallback
+  const rows = Array.from({ length: world.config.numSurfers }, (_, idx) => ({
+    label: activeRoster[idx]?.label ?? `S${idx}`,
+    agentId: activeRoster[idx]?.agentId ?? `agent-${idx}`,
+    score: Math.round(world.surferScore[idx]),
+    catches: world.surferCatches[idx],
+    dropIns: world.surferDropIns[idx],
+  })).sort((a, b) => b.score - a.score);
+
+  leaderboardList.innerHTML = '';
+  rows.slice(0, 12).forEach((r, idx) => {
+    const div = document.createElement('div');
+    div.className = 'lb-row';
+    div.innerHTML = `<span>#${idx + 1}</span><span>${r.label} (${r.agentId})</span><span>${r.score} pts</span><span>${r.catches}w / ${r.dropIns}di</span>`;
+    leaderboardList.appendChild(div);
+  });
 }
 
 // --- Tab Navigation ---
-function switchTab(tab: 'play' | 'train'): void {
+function switchTab(tab: 'play' | 'train' | 'intel'): void {
   const isPlay = tab === 'play';
+  const isTrain = tab === 'train';
+  const isIntel = tab === 'intel';
+
   tabBtnPlay.classList.toggle('active', isPlay);
   tabBtnPlay.setAttribute('aria-selected', String(isPlay));
-  tabBtnTrain.classList.toggle('active', !isPlay);
-  tabBtnTrain.setAttribute('aria-selected', String(!isPlay));
+  tabBtnTrain.classList.toggle('active', isTrain);
+  tabBtnTrain.setAttribute('aria-selected', String(isTrain));
+  tabBtnIntel.classList.toggle('active', isIntel);
+  tabBtnIntel.setAttribute('aria-selected', String(isIntel));
 
   panelPlay.classList.toggle('active', isPlay);
   panelPlay.hidden = !isPlay;
-  panelTrain.classList.toggle('active', !isPlay);
-  panelTrain.hidden = isPlay;
+  panelTrain.classList.toggle('active', isTrain);
+  panelTrain.hidden = !isTrain;
+  panelIntel.classList.toggle('active', isIntel);
+  panelIntel.hidden = !isIntel;
 
-  if (!isPlay) {
+  if (isTrain) {
     chartRenderer.render(trainingHistory, selectedEpisodes);
     refreshPolicySummaryUi();
+  } else if (isIntel) {
+    refreshIntelStatsUi();
   }
 }
 
@@ -189,32 +352,54 @@ tabBtnTrain.addEventListener('click', () => {
   playSfx('click');
   switchTab('train');
 });
+tabBtnIntel.addEventListener('click', () => {
+  playSfx('click');
+  switchTab('intel');
+});
 
 // --- Start / Reset Gameplay Heat ---
 function startNewHeat(nextSeed?: number): void {
+  heatCounter += 1;
   heatSeed = nextSeed ?? (heatSeed + 17) >>> 0;
-  world = createWorld(
-    {
-      numSurfers: 4,
-      paddleSpeedMultiplier: playPaddleSpeed,
-      maxSteps: 1200,
-    },
-    heatSeed
-  );
+  world = createHeatWorld(activePreset, heatSeed);
+  activeRoster = buildRoster(world.config.numSurfers);
+  telemetry = new TelemetryRecorder(world, {
+    heatId: `heat-${heatCounter}-${heatSeed}`,
+    tenantId: 'public_league',
+    preset: activePreset,
+    roster: activeRoster,
+  });
+
+  oceanCanvas.classList.toggle('classic-aspect', world.config.width <= 160);
   humanPolicy.setTouchTarget(world.surferX[0], world.surferY[0] - 12);
   updatePlayModeUi();
+  updateHeatStandingsUi();
 }
 
 function updatePlayModeUi(): void {
   btnModeBots.classList.toggle('active', !playVsTrainedAi);
   btnModeTrained.classList.toggle('active', playVsTrainedAi);
+  const n = world.config.numSurfers;
   if (playVsTrainedAi) {
     const eps = activeQPolicy.getMetadata().trainingEpisodes;
-    playModeBadge.textContent = `VS TRAINED AI (${eps} EPS)`;
+    playModeBadge.textContent = `${n} SURFERS • Q-AI (${eps})`;
   } else {
-    playModeBadge.textContent = 'VS 3 RULE BOTS';
+    playModeBadge.textContent = `${n} SURFERS • BOTS`;
   }
 }
+
+presetButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const preset = btn.dataset.preset as LineupPresetId | undefined;
+    if (!preset || !(preset in LINEUP_PRESETS)) return;
+    playSfx('click');
+    activePreset = preset;
+    presetButtons.forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    startNewHeat();
+    playStatusMsg.textContent = `Lineup scaled to ${world.config.numSurfers} surfers!`;
+  });
+});
 
 btnResetHeat.addEventListener('click', () => {
   playSfx('click');
@@ -225,13 +410,15 @@ btnResetHeat.addEventListener('click', () => {
 btnModeBots.addEventListener('click', () => {
   playSfx('click');
   playVsTrainedAi = false;
+  activeRoster = buildRoster(world.config.numSurfers);
   updatePlayModeUi();
-  playStatusMsg.textContent = 'Rivals: Deterministic Rule Bots';
+  playStatusMsg.textContent = 'Rivals: Multi-Archetype Rule Bots';
 });
 
 btnModeTrained.addEventListener('click', () => {
   playSfx('click');
   playVsTrainedAi = true;
+  activeRoster = buildRoster(world.config.numSurfers);
   updatePlayModeUi();
   playStatusMsg.textContent =
     activeQPolicy.getStateCount() > 0
@@ -283,7 +470,6 @@ function setPaddleActive(active: boolean): void {
 btnPaddle.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (!humanPolicy.getTouchTarget()) {
-    // Default target slightly offshore toward peak if user hasn't tapped canvas yet
     humanPolicy.setTouchTarget(world.surferX[0], Math.max(60, world.surferY[0] - 25));
   }
   setPaddleActive(true);
@@ -380,17 +566,15 @@ function advanceGameplayStep(): void {
   const numSurfers = world.config.numSurfers;
   const actions: ActionInput[] = new Array(numSurfers);
 
-  // Surfer 0: Human player
   const obs0 = observe(world, 0);
   const humanAct: SurferAction = humanPolicy.selectAction(obs0);
   actions[0] = humanAct;
 
-  // Surfers 1..N-1: Either Trained Q-AI (surfer 1) + RuleBots, or all RuleBots
   for (let i = 1; i < numSurfers; i++) {
     const obsI = observe(world, i);
     const policy: Policy =
       playVsTrainedAi && i === 1
-        ? activeQPolicy
+        ? getSelectedAiPolicy()
         : ruleBots[(i - 1) % ruleBots.length];
     actions[i] = policy.selectAction(obsI, world, i);
   }
@@ -410,6 +594,11 @@ function advanceGameplayStep(): void {
       humanAct.action === ActionCode.IN);
 
   const stepRes = step(world, actions, world.config.dt);
+  telemetry.recordStep(
+    world,
+    stepRes,
+    stepRes.done ? getEpisodeMetrics(world) : undefined
+  );
 
   const caughtWave = world.surferCatches[0] > prevCatches;
   const droppedIn = world.surferDropIns[0] > prevDropIns;
@@ -433,6 +622,9 @@ function advanceGameplayStep(): void {
     playSfx('splash');
   }
 
+  if (world.stepCount % 5 === 0) {
+    updateHeatStandingsUi();
+  }
   updateHud();
 }
 
@@ -448,16 +640,12 @@ function gameLoop(now: number): void {
       simAccumulator -= dt;
     }
 
-    const surferLabels = [
-      'YOU',
-      playVsTrainedAi ? 'Q-AI' : 'B1',
-      'B2',
-      'B3',
-    ];
+    const surferLabels = activeRoster.map((r) => r.label);
     oceanRenderer.render(world, {
       touchTarget: humanPolicy.getTouchTarget(),
       paddleHeld: humanPolicy.isPaddleHeld(),
       surferLabels,
+      showDensityStrip: true,
     });
   }
 
@@ -467,7 +655,7 @@ function gameLoop(now: number): void {
 // --- Web Worker Training Controller ---
 let selectedEpisodes = 1000;
 let trainPaddleSpeed = 1.0;
-let trainCompetitors = 2;
+let trainCompetitors = 15;
 let trainingWorker: Worker | null = null;
 let isTraining = false;
 let isPaused = false;
@@ -607,7 +795,7 @@ btnTrainCancel.addEventListener('click', () => {
   } satisfies WorkerInboundMessage);
 });
 
-// --- Policy Persistence (Save/Load Local, Export/Import JSON, Play vs AI) ---
+// --- Policy Persistence ---
 btnSaveLocal.addEventListener('click', () => {
   playSfx('click');
   savePolicyToLocalStorage(activeQPolicy);
@@ -649,9 +837,15 @@ inputImportJson.addEventListener('change', async () => {
   playSfx('click');
   try {
     const text = await file.text();
-    const imported = deserializePolicyFromJsonString(text);
-    activeQPolicy = imported;
-    savePolicyToLocalStorage(activeQPolicy);
+    const imported = await deserializeAnyPolicyFromJsonString(text);
+    if (imported instanceof QTablePolicy) {
+      activeNeuralPolicy = null;
+      activeQPolicy = imported;
+      savePolicyToLocalStorage(activeQPolicy);
+    } else {
+      activeNeuralPolicy = imported;
+    }
+    activeRoster = buildRoster(world.config.numSurfers);
     refreshPolicySummaryUi();
   } catch (err) {
     policySummaryText.textContent = `Import error: ${(err as Error).message}`;
@@ -671,10 +865,102 @@ btnPlayVsAi.addEventListener('click', () => {
   playStatusMsg.textContent = 'Competing against your Trained Q-AI!';
 });
 
+// --- Arena Telemetry & Governed Intelligence Actions ---
+btnExportTelemetry.addEventListener('click', () => {
+  playSfx('click');
+  const jsonl = telemetry.toJsonl();
+  const blob = new Blob([jsonl], { type: 'application/x-ndjson' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${telemetry.heatId}.jsonl`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+btnSyncApi.addEventListener('click', async () => {
+  playSfx('click');
+  const payload = telemetry.buildBatch(world, getEpisodeMetrics(world));
+  apiStatusBadge.textContent = 'Syncing...';
+  try {
+    const res = await fetch(`${API_BASE}/v1/telemetry/batches`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Principal-Id': intelPrincipalSelect.value,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { accepted_events?: number };
+    apiStatusBadge.textContent = `Synced (${body.accepted_events ?? 0})`;
+  } catch {
+    apiStatusBadge.textContent = 'API Offline';
+  }
+});
+
+btnRefreshLb.addEventListener('click', async () => {
+  playSfx('click');
+  try {
+    const res = await fetch(`${API_BASE}/v1/leaderboard`, {
+      headers: { 'X-Principal-Id': intelPrincipalSelect.value },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      entries: Array<{
+        agent_id: string;
+        policy_type: string;
+        elo_rating: number;
+        catches: number;
+        drop_ins: number;
+      }>;
+    };
+    apiStatusBadge.textContent = 'API Connected';
+    leaderboardList.innerHTML = '';
+    data.entries.forEach((e, idx) => {
+      const div = document.createElement('div');
+      div.className = 'lb-row';
+      div.innerHTML = `<span>#${idx + 1}</span><span>${e.agent_id} (${e.policy_type})</span><span>Elo ${Math.round(e.elo_rating)}</span><span>${e.catches}w / ${e.drop_ins}di</span>`;
+      leaderboardList.appendChild(div);
+    });
+  } catch {
+    apiStatusBadge.textContent = 'API Offline';
+    refreshIntelStatsUi();
+  }
+});
+
+btnAskSteward.addEventListener('click', async () => {
+  playSfx('click');
+  const query = intelQueryInput.value.trim();
+  if (!query) return;
+  intelResponseBox.textContent = 'Querying ACL-enforced Steward Intelligence...';
+  try {
+    const res = await fetch(`${API_BASE}/v1/intelligence/query`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Principal-Id': intelPrincipalSelect.value,
+      },
+      body: JSON.stringify({ query, heat_id: telemetry.heatId }),
+    });
+    const body = await res.json();
+    intelResponseBox.textContent = JSON.stringify(body, null, 2);
+  } catch {
+    intelResponseBox.textContent =
+      'FastAPI backend not reachable at ' +
+      API_BASE +
+      '. Run `uv run uvicorn services.api.main:app --reload` or `docker compose up` to query ACL-gated documents & heat citations.';
+  }
+});
+
 // --- Initialize App & PWA Service Worker ---
+oceanCanvas.classList.toggle('classic-aspect', world.config.width <= 160);
 updateMuteButtonUi();
 updateHud();
 updatePlayModeUi();
+updateHeatStandingsUi();
 refreshPolicySummaryUi();
 chartRenderer.render(trainingHistory, selectedEpisodes);
 requestAnimationFrame(gameLoop);

@@ -1,0 +1,63 @@
+name: Crowded Lineup Platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend-ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run test
+      - run: npm run build
+
+  python-quality-and-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12 && uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy packages services pipelines
+      - run: uv run pytest
+
+  postgres-rls-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: crowded
+          POSTGRES_PASSWORD: crowded_dev_password
+          POSTGRES_DB: crowded_lineup
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crowded -d crowded_lineup"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12 && uv sync
+      - env:
+          CROWDED_TEST_DATABASE_URL: postgresql://crowded:crowded_dev_password@localhost:5432/crowded_lineup
+        run: uv run pytest tests/integration/test_postgres_rls.py
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=infra/terraform fmt -check -recursive
+      - run: terraform -chdir=infra/terraform init -backend=false
+      - run: terraform -chdir=infra/terraform validate
